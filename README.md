@@ -50,7 +50,7 @@ Key responsibilities included:
 - Strain Gauges
 - Temperature Sensors
 - Capacitive Sensors
-- Optical Sensors
+- Lidar
 - Various Analog and Digital Sensors
 
 ### Actuators
