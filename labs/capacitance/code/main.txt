@@ -1,0 +1,196 @@
+// PIN LIST:
+
+// Analog input = PE0 (P30, siltscreen typo)
+// PWM = PIN PB6
+// Photoresistor input = PC6, goes to wide timer.
+// Everything (should) work but for some reason interrupts are not working as they should
+
+
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include "wait.h"
+#include <stddef.h>
+#include "clock.h"
+#include "uart0.h"
+#include "tm4c123gh6pm.h"
+
+
+
+#define FOUR_PIN      (*((volatile uint32_t *)(0x42000000 + (0x400063FC-0x40000000)*32 + 4*4)))
+#define FIVE_EN_PIN   (*((volatile uint32_t *)(0x42000000 + (0x400063FC-0x40000000)*32 + 4*5)))
+#define SIX_EN_PIN    (*((volatile uint32_t *)(0x42000000 + (0x400063FC-0x40000000)*32 + 4*6)))
+
+#define FOURPIN 16
+#define FIVEPIN 32
+#define SIXPIN  64
+
+#define PE1_PIN       (*((volatile uint32_t *)(0x42000000 + (0x400243FC-0x40000000)*32 + 4*1)))
+
+#define PE1_MASK     2
+//-----------------------------------------------------------------------------
+// Subroutines
+//-----------------------------------------------------------------------------
+
+//extern int strcmp(char * str1, char * str2);
+
+// Initialize Hardware
+
+#define AIN3_MASK 1
+
+// PortC masks
+#define FREQ_IN_MASK 64
+
+// PortF masks
+#define BLUE_LED_MASK 4
+#define GREEN_LED_MASK 8
+#define PUSH_BUTTON_MASK 16
+
+    //-----------------------------------------------------------------------------
+    // Global variables
+    //-----------------------------------------------------------------------------
+
+bool timeMode = true;
+uint32_t frequency = 0;
+uint32_t time = 0;
+uint16_t raw = 0;
+
+char str[40];
+
+    //-----------------------------------------------------------------------------
+    // Subroutines
+    //-----------------------------------------------------------------------------
+
+
+void initComparator(){
+    SYSCTL_RCGCACMP_R |= SYSCTL_RCGCACMP_R0;
+    //COMP_ACMIS_R |= 1;
+    COMP_ACREFCTL_R |= COMP_ACREFCTL_VREF_M | COMP_ACREFCTL_EN;
+    COMP_ACCTL0_R |= COMP_ACCTL0_ASRCP_REF | COMP_ACCTL0_ISLVAL | COMP_ACCTL0_CINV;
+    NVIC_EN0_R = 1 << (INT_COMP0-16);              // turn-on comp int
+}
+
+void comparatorInterrupt(){
+    //COMP_ACMIS_R |= 1;
+    time = WTIMER1_TAV_R;
+    WTIMER1_TAV_R = 0;
+    //WTIMER1_CTL_R &= ~TIMER_CTL_TAEN;
+    COMP_ACINTEN_R &= 0;
+    snprintf(str, sizeof(str), "Time:    %7"PRIu32" (us)\n", time);
+    putsUart0(str);
+}
+
+
+void disableCounterMode()
+{
+    TIMER1_CTL_R &= ~TIMER_CTL_TAEN;                 // turn-off time base timer
+    WTIMER1_CTL_R &= ~TIMER_CTL_TAEN;                // turn-off event counter
+    NVIC_DIS0_R = 1 << (INT_TIMER1A-16);             // turn-off interrupt 37 (TIMER1A)
+}
+
+void enableTimerMode()
+{
+    TIMER0_CTL_R &= ~(TIMER_CTL_TAEN);               // turn-off timer before reconfiguring
+    TIMER0_CFG_R = TIMER_CFG_32_BIT_TIMER;           // configure as 32-bit timer (A+B)
+    TIMER0_TAMR_R = TIMER_TAMR_TAMR_PERIOD;          // configure for periodic mode (count down)
+    TIMER0_TAILR_R = 40000000;                       // set load value to 40e5 for 40 Hz interrupt rate
+    TIMER0_IMR_R = TIMER_IMR_TATOIM;                 // turn-on interrupts
+    TIMER0_CTL_R |= TIMER_CTL_TAEN;                  // turn-on timer
+    NVIC_EN0_R = 1 << (INT_TIMER0A-16);              // turn-on interrupt 38 (TIMER1B)
+
+    WTIMER1_CTL_R &= ~TIMER_CTL_TAEN;                // turn-off counter before reconfiguring
+    WTIMER1_TAILR_R = 0xFFFFFFFF;
+    WTIMER1_CFG_R = 4;                               // configure as 32-bit counter (A only)
+    WTIMER1_TAMR_R = TIMER_TAMR_TAMR_1_SHOT | TIMER_TAMR_TACDIR;
+                                                     // configure for edge time mode, count up
+    WTIMER1_TAV_R = 0;                               // zero counter for first period
+    WTIMER1_CTL_R |= TIMER_CTL_TAEN;                 // turn-on counter
+}
+
+
+// Frequency counter service publishing latest frequency measurements every second
+void timer2Isr()
+{
+    GPIO_PORTE_DATA_R |= 2;
+    //waitMicrosecond(10);
+    COMP_ACINTEN_R |= 1;
+    //WTIMER1_CTL_R |= TIMER_CTL_TAEN;                 // turn-on counter
+    WTIMER1_TAV_R = 0;
+    GPIO_PORTE_DATA_R &= ~2;
+
+    TIMER0_ICR_R |= TIMER_ICR_TATOCINT;
+}
+
+// Period timer service publishing latest time measurements every positive edge
+
+// Initialize Hardware
+void initHw()
+{
+    // Initialize system clock to 40 MHz
+    initSystemClockTo40Mhz();
+
+    // Enable clocks
+    SYSCTL_RCGCTIMER_R |= (SYSCTL_RCGCTIMER_R4 | SYSCTL_RCGCTIMER_R3 | SYSCTL_RCGCTIMER_R2 | SYSCTL_RCGCTIMER_R1 | SYSCTL_RCGCTIMER_R0);
+    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R1;
+    SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R2 | SYSCTL_RCGCGPIO_R5 | SYSCTL_RCGCGPIO_R4;
+
+    _delay_cycles(3);
+
+    SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R4;
+    _delay_cycles(3);
+
+    // Configure AIN3 as an analog input
+    GPIO_PORTC_AFSEL_R |= 128;                 // select alternative functions for AIN3 (PE0)
+    GPIO_PORTC_DEN_R &= ~128;                  // turn off digital operation on pin PE0
+    GPIO_PORTC_AMSEL_R |= 128;                 // turn on analog operation on pin PE0
+    GPIO_PORTC_DIR_R &= ~128;
+
+    GPIO_PORTE_DEN_R |= 2;
+    GPIO_PORTE_PDR_R |= 2;
+    GPIO_PORTE_DIR_R |= 2;
+
+    // Initialize system clock to 40 MHz
+    _delay_cycles(3);
+    initUart0();
+    initComparator();
+    setUart0BaudRate(115200,40000000); // Set baud rate to project spec
+}
+
+//-----------------------------------------------------------------------------
+// Main
+//-----------------------------------------------------------------------------
+
+int main(void)
+{
+
+    // Initialize hardware
+    initHw();
+    initUart0();
+
+
+    putsUart0("Mechatronics Lab 5\n");
+
+    // Setup UART0 baud rate
+
+
+    // Configure selected mode
+    disableCounterMode();
+    enableTimerMode();
+
+
+    // Use blue LED to show mode
+
+    // Endless loop performing multiple tasks
+
+    while (true)
+    {
+        PE1_PIN = 1;         //make square wave PE1 high and low
+        waitMicrosecond(100);
+        PE1_PIN = 0;
+
+    }
+}
+
+
