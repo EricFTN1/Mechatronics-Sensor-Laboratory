@@ -27,7 +27,8 @@ Each laboratory exercise contains source code, reports, setup documentation, and
 
 ---
 
-## My Contributions
+## Contributions
+This laboratory project was completed collaboratively. All team members contributed to the design, testing, and analysis of the experiment.
 
 Throughout the course, I was responsible for the hardware integration, testing, documentation, and software implementation associated with the laboratory exercises.
 
