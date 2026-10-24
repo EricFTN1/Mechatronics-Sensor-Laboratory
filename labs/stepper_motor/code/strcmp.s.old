@@ -1,0 +1,20 @@
+	.def strcmp
+
+.thumb
+.text
+; Very simple STRCMP implementation thats fast, efficient, and safe w/o any pops (minimal system latency issues)
+strcmp:
+	LDRB R2, [R0], #1 ; Load and increment from the pointers
+	LDRB R3, [R1], #1
+	CMP R2, R3 ; If R0 is NE 0 but different from R1, it will still be different and this will then kick them out for being dissimilar.
+	BNE DONENE ; Check if they're not equal (in which case drop out)
+	AND R2, R2, #255 ; At this point we know both registers match. Now assuming we're dealing only with Ascii characters,
+	CBZ R2, DONEEQ ; the max value is going to be 8 bits so we're only comparing with the last 8 bits as it can be masked using an immediate value.
+	B strcmp ; This avoids a MOV and LDR which take more clocks.
+DONENE: ; Make sure that the value is one
+	BX LR ; This will return an address (a non-zero value)
+DONEEQ: ; Make sure that the value is 0
+	AND R0, R0, #0 ; This is fucked and IDK if it works
+	BX LR
+
+

@@ -1,0 +1,13 @@
+"./clock.obj"
+"./commonui.obj"
+"./main.obj"
+"./motorcontrol.obj"
+"./pain.obj"
+"./shell.obj"
+"./systemph.obj"
+"./tm4c123ge6pm_startup_ccs.obj"
+"./uart0.obj"
+"./wait.obj"
+"./watchdog.obj"
+"../tm4c123ge6pm.cmd"
+-llibc.a
