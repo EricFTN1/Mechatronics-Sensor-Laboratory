@@ -1,0 +1,386 @@
+
+int32_t i = 0 ;
+int32_t j = 0 ;
+
+int32_t alpha = 5;
+int32_t Rightspeed = 0;
+int32_t Leftspeed = 0;
+
+void process_dist(int32_t dist_left,int32_t dist_right,int32_t speed, int32_t dist)
+{
+    Rightspeed = PWM1_0_CMPA_R;
+    Leftspeed = PWM0_3_CMPA_R;
+    if ( ((dist_right - dist_left) > 1) ) //&& (Rightspeed >= (speed - 150)) && (Rightspeed <= speed)
+    {
+        //slow down left or speed up right or both
+        if (j<=100)
+        {
+            j += alpha;
+        }
+        else if(i>0)
+        {
+            i -= alpha;
+        }
+    }
+    if ( ((dist_left - dist_right) > 1) ) //&& (Leftspeed >= (speed-150)) && (Leftspeed <= speed)
+    {
+        //slow down right or speed up left or both
+        if (i<=100)
+        {
+            i += alpha;
+        }
+        else if(j>0)
+        {
+            j -= alpha;
+        }
+    }
+}
+
+bool timeMode = false;
+uint32_t frequency = 0;
+uint32_t time = 0;
+
+//-----------------------------------------------------------------------------
+// Subroutines
+//-----------------------------------------------------------------------------
+
+void enableCounterMode()
+{
+    // Configure Wide Timer 1 as counter of external events on CCP0 pin
+    WTIMER3_CTL_R &= ~TIMER_CTL_TBEN;                // turn-off counter before reconfiguring
+    WTIMER3_CFG_R = 4;                               // configure as 32-bit counter (B only)
+    WTIMER3_TBMR_R = TIMER_TBMR_TBMR_CAP | TIMER_TBMR_TBCDIR; // configure for edge count mode, count up
+    WTIMER3_CTL_R = TIMER_CTL_TBEVENT_POS;           // count positive edges
+    WTIMER3_IMR_R = 0;                               // turn-off interrupts
+    WTIMER3_TBV_R = 0;                               // zero counter for first period
+    WTIMER3_CTL_R |= TIMER_CTL_TBEN;                 // turn-on counter
+}
+
+void disableCounterMode()
+{
+    WTIMER3_CTL_R &= ~TIMER_CTL_TBEN;                // turn-off event counter
+}
+
+void enableTimerMode()
+{
+    WTIMER3_CTL_R &= ~TIMER_CTL_TBEN;                // turn-off counter before reconfiguring
+    WTIMER3_CFG_R = 4;                               // configure as 32-bit counter (B only)
+    WTIMER3_TBMR_R = TIMER_TBMR_TBCMR | TIMER_TBMR_TBMR_CAP | TIMER_TBMR_TBCDIR;
+                                                     // configure for edge time mode, count up
+    WTIMER3_CTL_R = TIMER_CTL_TBEVENT_POS;           // measure time from positive edge to positive edge
+    WTIMER3_IMR_R = TIMER_IMR_CBEIM;                 // turn-on interrupts
+    WTIMER3_TBV_R = 0;                               // zero counter for first period
+    WTIMER3_CTL_R |= TIMER_CTL_TBEN;                 // turn-on counter
+    NVIC_EN3_R = 1 << (INT_WTIMER3B-16-96);          // turn-on interrupt 117 (WTIMER3B)
+}
+
+void disableTimerMode()
+{
+    WTIMER3_CTL_R &= ~TIMER_CTL_TBEN;                // turn-off counter
+    NVIC_DIS3_R = 1 << (INT_WTIMER3B-16-96);         // turn-off interrupt 117 (WTIMER3B)
+}
+
+void PortDISR()
+{
+    //NVIC_EN0_R = 0 << (INT_GPIOD-16);         //turn off gpio int
+
+    time[index] = WTIMER3_TBV_R;
+    index++;
+    if (index > 35)
+    {
+        index = 0;
+    }
+
+    if (state == 0)  //idle state, zero counter and moves to next state
+    {
+        WTIMER3_TBV_R = 0;
+        reset();
+        key = 0;
+        state++;
+    }
+    else if (state == 1) //next falling edge
+    {
+        if( (WTIMER3_TBV_R < ms13 ) || (WTIMER3_TBV_R > ms14) ) // read counter input, if outside of 13.5 range then invalid
+        {
+            state = 0;
+        }
+        else
+        {
+            state++;
+            bit = 0;  //reset bit to do it again if from idle
+            WTIMER3_TBV_R = 0;
+        }
+    }
+    else if (state > 1)
+    {
+        if (bit <= 32)
+        {
+            if ( (WTIMER3_TBV_R > (1.5*tau)) && (WTIMER3_TBV_R < (2.5*tau)) )
+            {
+                code = 0;
+            }
+            if ( (WTIMER3_TBV_R > 3.5*tau) && (WTIMER3_TBV_R < (4.5*tau)) )
+            {
+                code = 1;
+            }
+            if (bit < 7)
+            {
+                addy = (addy | code) << 1;
+            }
+            else if (bit == 7)
+            {
+                addy = (addy | code);
+            }
+            else if (bit > 7  && bit < 15)
+            {
+                addynot = (addynot | code) << 1;
+            }
+            else if (bit == 15)
+            {
+                addynot = (addynot | code);
+            }
+            else if (bit > 15 && bit < 23)
+            {
+                data = (data | code) << 1;
+            }
+            else if (bit == 23)
+            {
+                data = (data | code);
+            }
+            else if (bit > 23 && bit < 31)
+            {
+                datanot = (datanot | code) << 1;
+            }
+            if (bit < 31)
+            {
+                key = (key | code) << 1;        //load code into key and then bit shift
+            }
+            else if (bit == 32)
+            {
+                datanot = (datanot | code);
+                key = (key | code);
+            }
+            WTIMER3_TBV_R = 0;              //reset timer to go again
+            bit++;
+        }
+        else
+        {
+            Uint8addynotnot = ~(addynot); //~(addynot) becomes signed for some reason, change back to uint 223
+            Uint8datanotnot = ~(datanot);
+            if( (bit >= 32) && (addy == Uint8addynotnot) && (data == Uint8datanotnot ) ) //bit becomes 33 due to last signal
+            {
+                flag = 1;
+                state=0;
+            }
+            else
+            {
+                flag = 0;
+                state=0;
+            }
+        }
+
+    }
+
+    if (flag)
+    {
+        if (key == 0x20DF02FD)  //Forward button
+        {
+            move(100, 0, 100, 0);
+        }
+        if (key == 0x20DF609F) //Right button cw
+        {
+            move(100, 0, 0, 100);
+        }
+        if (key == 0x20DFE01F) //Left button ccw
+        {
+            move(0, 100, 100, 0);
+        }
+        if (key == 0x20DF827D) //Reverse Button
+        {
+            move(0, 100, 0, 100);
+        }
+        if (key == 0x20DF22DD) //Ok Button, stops
+        {
+            move(100, 100, 100, 100);
+        }
+        if (key == 0x20DF6A95) //Netflix Button, navigation wip
+        {
+            //navigation();
+            move(100, 100, 100, 100);
+        }
+        key =0;
+        flag =0;
+    }
+    //NVIC_EN0_R = 1 << (INT_GPIOD-16);
+    GPIO_PORTD_ICR_R  |= IR_OUT_MASK;
+}
+
+
+void PortDISR()
+{
+   Widetimer();
+   if(state == 0)
+   {
+       bit =0;
+       data=0;
+       key =0;
+       WTIMER3_TBV_R = 0;
+       state++;
+   }
+   if(state ==1)
+   {
+       if (( time > 520000) && ( time < 560000))
+       {
+           WTIMER3_TBV_R = 0;
+           state++;
+       }
+   }
+   if(state == 2)
+   {
+       if(bit<= 33){
+           data = data << 1;
+       }
+       if(time >60000 && time <100000)
+       {
+           data+=1;
+           bit++;
+       }
+       else
+       {
+           bit++;
+       }
+       if(bit == 32)
+       {
+           key = data;
+           state = 0;
+           flag = 1;
+           if(flag == 1 )
+             {
+                 //process code for forward rev cw ccw
+                 if(key == 275743102)
+                 {
+
+                    //fwd
+                     move(100,0,100,0);
+                 }
+                 if(key == 275759422)
+                 {
+
+                    //rev
+                     move(0,100,0,100);
+                 }
+                 if(key == 275755087)
+                 {
+
+                     //cw
+                     move(100,0,0,100);
+                 }
+                 if(key == 275771407)
+                 {
+
+                     //ccw
+                     move(0,100,100,0);
+                 }
+                 if(key == 275747182)
+                       {
+
+                           //stop
+                           move(0,0,0,0);
+                       }
+                 flag =0;
+             }
+       }
+   }
+   GPIO_PORTC_ICR_R = IR_OUT_MASK;  // clear interrupt flag
+}
+void Widetimer()
+{
+    time = WTIMER3_TBV_R;                        // read counter input
+    WTIMER3_TBV_R = 0;                           // zero counter for next edge
+   // GREEN_LED ^= 1;                              // status
+   WTIMER3_ICR_R = TIMER_ICR_CBECINT;           // clear interrupt flag
+}
+void enableCounterMode()
+{
+    // Configure Timer 1 as the time base
+    TIMER1_CTL_R &= ~TIMER_CTL_TAEN;                 // turn-off timer before reconfiguring
+    TIMER1_CFG_R = TIMER_CFG_32_BIT_TIMER;           // configure as 32-bit timer (A+B)
+    TIMER1_TAMR_R = TIMER_TAMR_TAMR_PERIOD;          // configure for periodic mode (count down)
+    TIMER1_TAILR_R = 40000000;                       // set load value to 40e6 for 1 Hz interrupt rate
+    TIMER1_IMR_R = TIMER_IMR_TATOIM;                 // turn-on interrupts
+    TIMER1_CTL_R |= TIMER_CTL_TAEN;                  // turn-on timer
+    NVIC_EN0_R = 1 << (INT_TIMER1A-16);              // turn-on interrupt 37 (TIMER1A)
+
+    // Configure Wide Timer 1 as counter of external events on CCP0 pin
+    WTIMER5_CTL_R &= ~TIMER_CTL_TAEN;                // turn-off counter before reconfiguring
+    WTIMER5_CFG_R = 4;                               // configure as 32-bit counter (A only)
+    WTIMER5_TAMR_R = TIMER_TAMR_TAMR_CAP | TIMER_TAMR_TACDIR; // configure for edge count mode, count up
+    WTIMER5_CTL_R = TIMER_CTL_TAEVENT_POS;           // count positive edges
+    WTIMER5_IMR_R = 0;                               // turn-off interrupts
+    WTIMER5_TAV_R = 0;                               // zero counter for first period
+    WTIMER5_CTL_R |= TIMER_CTL_TAEN;                 // turn-on counter
+}
+
+void disableCounterMode()
+{
+    TIMER1_CTL_R &= ~TIMER_CTL_TAEN;                 // turn-off time base timer
+    WTIMER5_CTL_R &= ~TIMER_CTL_TAEN;                // turn-off event counter
+    NVIC_DIS0_R = 1 << (INT_TIMER1A-16);             // turn-off interrupt 37 (TIMER1A)
+}
+
+void enableTimerMode()
+{
+    WTIMER5_CTL_R &= ~TIMER_CTL_TAEN;                // turn-off counter before reconfiguring
+    WTIMER5_CFG_R = 4;                               // configure as 32-bit counter (A only)
+    WTIMER5_TAMR_R = TIMER_TAMR_TACMR | TIMER_TAMR_TAMR_CAP | TIMER_TAMR_TACDIR;
+                                                     // configure for edge time mode, count up
+    WTIMER5_CTL_R = TIMER_CTL_TAEVENT_POS;           // measure time from positive edge to positive edge
+    WTIMER5_IMR_R = TIMER_IMR_CAEIM;                 // turn-on interrupts
+    WTIMER5_TAV_R = 0;                               // zero counter for first period
+    WTIMER5_CTL_R |= TIMER_CTL_TAEN;                 // turn-on counter
+    NVIC_EN3_R = 1 << (INT_WTIMER5A-16-96);          // turn-on interrupt 112 (WTIMER1A)
+}
+
+void disableTimerMode()
+{
+    WTIMER5_CTL_R &= ~TIMER_CTL_TAEN;                // turn-off counter
+    NVIC_DIS3_R = 1 << (INT_WTIMER5A-16-96);         // turn-off interrupt 112 (WTIMER5A)
+}
+
+// Frequency counter service publishing latest frequency measurements every second
+void timer1Isr()
+{
+    frequency = WTIMER5_TAV_R;                   // read counter input
+    WTIMER5_TAV_R = 0;                           // reset counter for next period
+    GREEN_LED ^= 1;                              // status
+    TIMER5_ICR_R = TIMER_ICR_TATOCINT;           // clear interrupt flag
+}
+
+// Period timer service publishing latest time measurements every positive edge
+void wideTimer1Isr()
+{
+    time = WTIMER5_TAV_R;                        // read counter input
+    WTIMER5_TAV_R = 0;                           // zero counter for next edge
+    GREEN_LED ^= 1;                              // status
+    WTIMER5_ICR_R = TIMER_ICR_CAECINT;           // clear interrupt flag
+}
+//void Crank90s(void) //turn 90 degrees
+//{
+//    speed = speedmax;
+//    reset_distance();
+//    angle = 90;
+//    dist = (2*pi*675*angle)/360 - 30000;
+//    move(0, speed, speed, 0);
+//}
+
+//void navigation(void)
+//{
+//    c = 0;
+//    for (c = 0; c < 4; c++)
+//    {
+//        TIMER3_CTL_R |= TIMER_CTL_TAEN;
+//        Crank90s();
+//        nav[c] = WTIMER5_TAV_R;
+//    }
+//}
+//------------
