@@ -83,7 +83,7 @@ Key responsibilities included:
 - Technical Documentation
 - Experimental Testing
 - Engineering Analysis
-
+- I2C
 ---
 
 ## Repository Structure
